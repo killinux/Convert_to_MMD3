@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+._*
+
+# local-only (secrets / machine config) — never commit
+*.local.md
+docs/remote.local.md
