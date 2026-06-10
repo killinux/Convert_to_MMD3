@@ -173,6 +173,33 @@ def _arm_evidence(candidate):
     return 0.0
 
 
+def _lateral_candidates(bone, chain_set, x_thresh, min_depth=1):
+    """Limb-start candidates among `bone`'s off-chain children, per side.
+
+    A child counts as a left/right candidate if its OWN head is lateral, or —
+    a clavicle root hugging the spine (|x| under threshold, e.g. XNALara
+    'arm left shoulder 1' on some ports) — if any of its children is lateral.
+    Without the second form, a chest bone whose only lateral-headed children
+    are coat/jacket strands hides the real arms entirely.
+    """
+    left, right = [], []
+    for c in bone.children:
+        if c.name in chain_set or _subtree_depth(c) < min_depth:
+            continue
+        if c.head_local.x > x_thresh:
+            left.append(c)
+        elif c.head_local.x < -x_thresh:
+            right.append(c)
+        else:
+            # a centered pass-through (Daz 'pelvis' parenting BOTH thighs)
+            # is a candidate on every side its grandchildren reach
+            if any(g.head_local.x > x_thresh for g in c.children):
+                left.append(c)
+            if any(g.head_local.x < -x_thresh for g in c.children):
+                right.append(c)
+    return left, right
+
+
 def _find_fork_points(chain, H):
     """Find arm and leg fork indices on the spine chain.
 
@@ -187,36 +214,16 @@ def _find_fork_points(chain, H):
 
     x_thresh = max(H * 0.01, H * CENTER_EPS)
     chain_set = {b.name for b in chain}
-    min_depth = 3
     forks = []  # (idx, left candidates, right candidates)
 
-    def _off_children(bone):
-        return [c for c in bone.children if c.name not in chain_set]
-
     for i, bone in enumerate(chain):
-        if i >= len(chain) - 2:
+        # every bone except the chain tip may fork — XNALara default rigs
+        # hang the shoulders off 'head neck lower', the second-to-last bone
+        if i >= len(chain) - 1:
             continue
-        off = _off_children(bone)
-        left = [c for c in off
-                if c.head_local.x > x_thresh and _subtree_depth(c) >= min_depth]
-        right = [c for c in off
-                 if c.head_local.x < -x_thresh and _subtree_depth(c) >= min_depth]
+        left, right = _lateral_candidates(bone, chain_set, x_thresh, min_depth=3)
         if left and right:
             forks.append((i, left, right))
-
-    # second pass: grandchildren (limb roots hidden behind a centered helper)
-    found = {i for i, _, _ in forks}
-    for i, bone in enumerate(chain):
-        if i in found or i >= len(chain) - 2:
-            continue
-        for oc in _off_children(bone):
-            gleft = [c for c in oc.children
-                     if c.head_local.x > x_thresh and _subtree_depth(c) >= min_depth]
-            gright = [c for c in oc.children
-                      if c.head_local.x < -x_thresh and _subtree_depth(c) >= min_depth]
-            if gleft and gright:
-                forks.append((i, gleft, gright))
-                break
 
     if not forks:
         return None, None
@@ -278,16 +285,13 @@ def _map_spine(chain, leg_idx, arm_idx, result, H):
     if leg_idx is not None and leg_idx > 0:
         result["all_parents_bone"] = chain[0].name
 
-    # Center (hips): if the leg fork bone's parent is center-ish with only 1 child,
-    # prefer the parent (e.g., "root hips" over "unused bip001 pelvis")
+    # The leg fork bone is the pelvis — MMD's 下半身, the DEFORM bone that
+    # owns the hip weights. It must NOT be mapped to センター: センター is a
+    # weightless control bone that `complete` builds from scratch; renaming a
+    # weighted pelvis bone to センター gets its skin wiped by the control-bone
+    # cleanup (real-rig failure: a port whose legs hang off 'spine lower').
     if leg_idx is not None:
-        fork = chain[leg_idx]
-        if (leg_idx > 1
-                and len(chain[leg_idx - 1].children) == 1
-                and abs(chain[leg_idx - 1].head_local.x) < lat_eps):
-            result["center_bone"] = chain[leg_idx - 1].name
-        else:
-            result["center_bone"] = fork.name
+        result["lower_body_bone"] = chain[leg_idx].name
 
     if arm_idx is None:
         # Only leg fork found — map remaining chain above legs
@@ -310,24 +314,31 @@ def _map_spine(chain, leg_idx, arm_idx, result, H):
         # Only arm fork found — set center as root
         result["center_bone"] = chain[0].name
 
-    # Spine segments between hips and arm fork
+    # Spine segments between hips and the chest. Normally the arm fork bone
+    # IS the chest (上半身2). XNALara default rigs instead hang the shoulders
+    # off the neck root ('head neck lower', one bone under the head): when
+    # only the head remains above the fork, the fork bone is the NECK and the
+    # chest is the bone just below it.
     start = (leg_idx + 1) if leg_idx is not None else 1
-    spine_seg = chain[start:arm_idx]
-
-    if len(spine_seg) >= 1:
-        result["upper_body_bone"] = spine_seg[0].name
-    if len(spine_seg) >= 2:
-        result["upper_body1_bone"] = spine_seg[1].name
-    # arm fork bone = upper_body2 (chest level)
-    result["upper_body2_bone"] = chain[arm_idx].name
-
-    # Neck and head: above arm fork (head = last, neck = first above fork)
     above = chain[arm_idx + 1:]
-    if len(above) >= 2:
+    chest_idx = arm_idx
+    if len(above) == 1 and arm_idx - 1 >= start:
+        chest_idx = arm_idx - 1
+        result["neck_bone"] = chain[arm_idx].name
+        result["head_bone"] = above[0].name
+    elif len(above) >= 2:
         result["head_bone"] = above[-1].name
         result["neck_bone"] = above[0].name
     elif len(above) == 1:
         result["head_bone"] = above[0].name
+
+    spine_seg = chain[start:chest_idx]
+    if len(spine_seg) >= 1:
+        result["upper_body_bone"] = spine_seg[0].name
+    if len(spine_seg) >= 2:
+        result["upper_body1_bone"] = spine_seg[1].name
+    # chest bone = upper_body2
+    result["upper_body2_bone"] = chain[chest_idx].name
 
 
 # ---------------------------------------------------------------------------
@@ -340,18 +351,7 @@ def _map_arms(chain, arm_idx, result, H):
     chain_set = {b.name for b in chain}
     x_thresh = max(H * 0.01, H * CENTER_EPS)
 
-    off = [c for c in fork_bone.children if c.name not in chain_set]
-    left = [c for c in off if c.head_local.x > x_thresh]
-    right = [c for c in off if c.head_local.x < -x_thresh]
-
-    # If no direct lateral children, check grandchildren
-    if not left or not right:
-        for oc in off:
-            for gc in oc.children:
-                if gc.head_local.x > x_thresh and not left:
-                    left = [oc]
-                elif gc.head_local.x < -x_thresh and not right:
-                    right = [oc]
+    left, right = _lateral_candidates(fork_bone, chain_set, x_thresh)
 
     left_start = _pick_arm_start(left)
     right_start = _pick_arm_start(right)
@@ -397,14 +397,22 @@ def _trace_arm_chain(start, max_depth=10):
 def _segment_arm_chain(nodes, hand_i):
     """Pick (shoulder_i or None, upper_i, elbow_i) from nodes[0..hand_i].
 
-    Joint scoring instead of positional slots, so in-chain twist bones
-    (Daz lShldrTwist/lForearmTwist, split UE chains) are skipped: among all
-    (upper, elbow) interior pairs prefer anatomically balanced segment
-    lengths (upper ≈ 1.1 × forearm), with small name-hint bonuses.
-    Works in T-pose (no bend angle required).
+    The classic 4-node chain (shoulder→upper→elbow→hand) maps positionally —
+    that assignment is always right and joint scoring must never override it
+    (a short clavicle can fool any length prior: verified on a real XNALara
+    rig where scoring once picked the clavicle as the upper arm).
+
+    Scoring is used only when the chain carries EXTRA nodes — in-chain twist
+    bones (Daz lShldrTwist/lForearmTwist, split UE chains) — or is a 3-node
+    chain (no clavicle). Among all (upper, elbow) interior pairs it prefers
+    anatomically balanced segment lengths (upper ≈ 1.1 × forearm) with
+    name-hint tie-breakers. No bend term: a clavicle kink fakes a bend while
+    T-pose elbows have none. Works in T-pose.
     """
     if hand_i < 2:
         return None, None, None
+    if hand_i == 3:
+        return 0, 1, 2
     hand_head = nodes[hand_i].head_local
 
     best = None
@@ -425,11 +433,6 @@ def _segment_arm_chain(nodes, hand_i):
                 score -= 1.5
             if _ELBOW_NAME_RE.search(nodes[i_el].name):
                 score += 0.6
-            # bend bonus: a real elbow may carry the chain's bend (A-pose)
-            d0 = (nodes[i_el].head_local - nodes[i_up].head_local).normalized()
-            d1 = (hand_head - nodes[i_el].head_local).normalized()
-            if d0.length > 0 and d1.length > 0 and d0.dot(d1) < 0.996:  # >~5°
-                score += 0.15
             # prefer the longest coverage: upper arm should start as close to
             # the torso as possible (skip only what must be skipped)
             score -= 0.05 * i_up
@@ -610,10 +613,58 @@ def _map_legs(chain, leg_idx, result, H):
         _assign_leg(rbest, False, result, H)
 
 
+def _segment_leg_chain(nodes, H):
+    """Pick (thigh_i, knee_i, ankle_i) from a traced leg chain.
+
+    Joint anatomy instead of positional slots, so chains carrying extra
+    bones — leading corrective bones (Daz-port c_thigh_b.l) or in-chain
+    thigh twist — assign correctly:
+      ankle = first node (index>=2) at ankle height (z < 0.12H),
+      knee  = node whose height is closest to the hip↔ankle midpoint
+              (twist/roll-named nodes penalised),
+      thigh = the LATEST node above the knee whose thigh/shin length ratio
+              is anatomically plausible (skips leading correctives), falling
+              back to the best ratio (skips in-chain thigh twist).
+    Returns None when no node reaches ankle height (degenerate rig) — the
+    caller then uses the positional fallback.
+    """
+    ankle_i = None
+    for i in range(2, len(nodes)):
+        if nodes[i].head_local.z < 0.12 * H:
+            ankle_i = i
+            break
+    if ankle_i is None or ankle_i < 2:
+        return None
+    ankle_z = nodes[ankle_i].head_local.z
+    hip_z = nodes[0].head_local.z
+    mid_z = (hip_z + ankle_z) / 2.0
+
+    knee_i = None
+    best = None
+    for i in range(1, ankle_i):
+        score = -abs(nodes[i].head_local.z - mid_z)
+        if _TWIST_NAME_RE.search(nodes[i].name):
+            score -= 0.5 * H
+        if best is None or score > best:
+            best = score
+            knee_i = i
+
+    shin_len = (nodes[ankle_i].head_local - nodes[knee_i].head_local).length
+    if shin_len < 1e-9:
+        return None
+    scored = []
+    for i in range(0, knee_i):
+        thigh_len = (nodes[knee_i].head_local - nodes[i].head_local).length
+        scored.append((i, abs(thigh_len / shin_len - 1.05)))
+    plausible = [i for i, d in scored if d < 0.25]
+    thigh_i = max(plausible) if plausible else min(scored, key=lambda t: t[1])[0]
+    return thigh_i, knee_i, ankle_i
+
+
 def _assign_leg(start, is_left, result, H):
     """Trace leg chain and assign thigh/shin/foot/toe."""
     side = "left" if is_left else "right"
-    chain = _trace_limb_chain(start, max_depth=6)
+    chain = _trace_limb_chain(start, max_depth=8)
 
     # Skip control bones (腰キャンセル) at chain start: head overlaps next bone
     if len(chain) >= 2:
@@ -621,6 +672,26 @@ def _assign_leg(start, is_left, result, H):
         if d < H * CENTER_EPS:
             chain = chain[1:]
 
+    if len(chain) >= 3:
+        seg = _segment_leg_chain(chain, H)
+        if seg is not None:
+            thigh_i, knee_i, ankle_i = seg
+            result[f"{side}_thigh_bone"] = chain[thigh_i].name
+            result[f"{side}_calf_bone"] = chain[knee_i].name
+            result[f"{side}_foot_bone"] = chain[ankle_i].name
+            # toe (足先EX) must sit meaningfully FORWARD of the ankle — Daz
+            # lMetatarsals' head is at the heel (mm from the ankle head):
+            # using it gives 足首 a degenerate backward direction. Walk the
+            # chain past such nodes to the real toe; none found → complete
+            # synthesises a ground-forward toe instead.
+            ankle_head = chain[ankle_i].head_local
+            for j in range(ankle_i + 1, len(chain)):
+                if chain[j].head_local.y < ankle_head.y - 0.02 * H:
+                    result[f"{side}_toe_bone"] = chain[j].name
+                    break
+            return
+
+    # positional fallback (degenerate / short chains)
     if len(chain) >= 4:
         result[f"{side}_thigh_bone"] = chain[0].name
         result[f"{side}_calf_bone"] = chain[1].name

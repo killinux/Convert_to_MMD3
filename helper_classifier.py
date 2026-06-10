@@ -46,7 +46,17 @@ def classify_helpers(armature_data, skeleton_map):
     lat_eps = H * CENTER_EPS
 
     segments = _build_segments(bones, skeleton_map)
-    center_name = skeleton_map.get("center_bone", "")
+    # pelvis anchor: the bone owning the hip area — 下半身 since the fork→下半身
+    # remap; center_bone kept as fallback for manually-filled presets.
+    anchor_name = (skeleton_map.get("lower_body_bone", "")
+                   or skeleton_map.get("center_bone", ""))
+    anchor_ancestors = set()
+    if anchor_name and bones.get(anchor_name):
+        cur = bones.get(anchor_name).parent
+        while cur:
+            if cur.name not in mapped:
+                anchor_ancestors.add(cur.name)
+            cur = cur.parent
     thigh_names = {skeleton_map.get("left_thigh_bone", ""),
                    skeleton_map.get("right_thigh_bone", "")} - {""}
     spine_names = {skeleton_map.get(k, "") for k in (
@@ -95,11 +105,19 @@ def classify_helpers(armature_data, skeleton_map):
             result[name] = "other"
             continue
 
+        # Centered unmapped ANCESTORS of the pelvis anchor (a 'root hips' or
+        # helper bone the spine threads through above 下半身): their weights
+        # belong to 下半身 — left in place they'd be dead bones whose skin
+        # never follows the hips.
+        if name in anchor_ancestors and abs(bone.head_local.x) < lat_eps:
+            result[name] = "pelvis"
+            continue
+
         ancestor = _find_mapped_ancestor(bone, mapped)
 
-        # Pelvis: DIRECT shallow child of center, centered
-        if ancestor == center_name and center_name:
-            is_direct = bone.parent and bone.parent.name == center_name
+        # Pelvis: DIRECT shallow child of the anchor, centered
+        if ancestor == anchor_name and anchor_name:
+            is_direct = bone.parent and bone.parent.name == anchor_name
             if is_direct and abs(bone.head_local.x) < lat_eps:
                 result[name] = "pelvis"
             elif abs(bone.head_local.x) >= lat_eps:

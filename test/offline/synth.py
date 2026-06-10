@@ -80,7 +80,7 @@ def _add_arm(rig, side, names, has_shoulder=True, twist="none", finger_count=5,
     elbow = sh_joint + d * (P["upper_arm_len"] * H)
     wrist = elbow + d * (P["forearm_len"] * H)
 
-    parent = rig.chest_bone
+    parent = getattr(rig, "arm_parent", None) or rig.chest_bone
     if has_shoulder:
         parent = rig.arm.bone(names["shoulder"], sh_root, sh_joint, parent)
         rig.expected[f"{side}_shoulder_bone"] = parent.name
@@ -133,7 +133,8 @@ def _add_arm(rig, side, names, has_shoulder=True, twist="none", finger_count=5,
             rig.expected[f"{side}_{fname}{mmd_idx[fname][j]}"] = bn.name
 
 
-def _add_leg(rig, side, names, has_toe=True, twist="none", parent=None):
+def _add_leg(rig, side, names, has_toe=True, twist="none", parent=None,
+             corrective=False, metatarsals=False):
     H = rig.H
     sgn = 1 if side == "left" else -1
     hip = Vector((sgn * P["thigh_x"], 0.0, P["hips_z"])) * H
@@ -142,16 +143,33 @@ def _add_leg(rig, side, names, has_toe=True, twist="none", parent=None):
     toe = ankle + Vector((0, -P["foot_fwd"], -0.02)) * H
 
     parent = parent or rig.hips_bone
+    if corrective:
+        # Daz-port style leading corrective bone right next to the hip joint
+        # (tifa's c_thigh_b.l) — must NOT be picked as the thigh.
+        parent = rig.arm.bone(f"c_thigh_b.{side[0]}",
+                              hip + Vector((0, 0.02, 0.015)) * H, None, parent)
     thigh = rig.arm.bone(names["thigh"], hip, None, parent)
-    calf = rig.arm.bone(names["calf"], knee, None, thigh)
+    calf_parent = thigh
+    if twist == "inchain":
+        calf_parent = rig.arm.bone(names["thigh_twist"], hip + (knee - hip) * 0.5,
+                                   None, thigh)
+    calf = rig.arm.bone(names["calf"], knee, None, calf_parent)
     foot = rig.arm.bone(names["foot"], ankle, toe, calf)
     rig.expected[f"{side}_thigh_bone"] = thigh.name
     rig.expected[f"{side}_calf_bone"] = calf.name
     rig.expected[f"{side}_foot_bone"] = foot.name
     if twist == "child":
         rig.arm.bone(names["thigh_twist"], hip + (knee - hip) * 0.5, None, thigh)
+    toe_parent = foot
+    if metatarsals:
+        # real Daz: lMetatarsals' head is essentially AT the heel/ankle —
+        # toe selection must skip it (it'd give 足首 a degenerate direction)
+        toe_parent = rig.arm.bone(f"{side[0]}Metatarsals",
+                                  ankle + Vector((0, -0.008, -0.012)) * H,
+                                  None, foot)
     if has_toe:
-        tb = rig.arm.bone(names["toe"], toe, toe + Vector((0, -P["toe_fwd"], 0)) * H, foot)
+        tb = rig.arm.bone(names["toe"], toe, toe + Vector((0, -P["toe_fwd"], 0)) * H,
+                          toe_parent)
         rig.expected[f"{side}_toe_bone"] = tb.name
 
 
@@ -245,8 +263,35 @@ def build_rig(naming="xnalara", height=1.7, pose="A", spine_segments=2,
               has_shoulder=True, has_toe=True, arm_twist="none", leg_twist="none",
               finger_count=5, carpals=False, skirt=0, hair=0, wings=False,
               breast=False, unused_helpers=False, legs_from_pelvis=False,
-              arm_ribbon=False):
-    """Build a complete synthetic humanoid. Returns (FakeArmatureData, expected)."""
+              arm_ribbon=False, proportions=None,
+              leg_corrective=False, leg_metatarsals=False, arms_from_neck=False):
+    """Build a complete synthetic humanoid. Returns (FakeArmatureData, expected).
+
+    `proportions` overrides entries of the P table for this build (e.g. a
+    short clavicle reproducing real-rig geometry that fooled joint scoring).
+    """
+    saved_P = None
+    if proportions:
+        saved_P = dict(P)
+        P.update(proportions)
+    try:
+        return _build_rig_inner(naming, height, pose, spine_segments,
+                                has_shoulder, has_toe, arm_twist, leg_twist,
+                                finger_count, carpals, skirt, hair, wings,
+                                breast, unused_helpers, legs_from_pelvis,
+                                arm_ribbon, leg_corrective, leg_metatarsals,
+                                arms_from_neck)
+    finally:
+        if saved_P is not None:
+            P.clear()
+            P.update(saved_P)
+
+
+def _build_rig_inner(naming, height, pose, spine_segments, has_shoulder,
+                     has_toe, arm_twist, leg_twist, finger_count, carpals,
+                     skirt, hair, wings, breast, unused_helpers,
+                     legs_from_pelvis, arm_ribbon, leg_corrective=False,
+                     leg_metatarsals=False, arms_from_neck=False):
     rig = Rig(height, pose)
     name_fn = {"xnalara": _xnalara_names, "bip001": _bip_names,
                "ue4": _ue4_names, "daz": _daz_names}.get(naming)
@@ -254,27 +299,27 @@ def build_rig(naming="xnalara", height=1.7, pose="A", spine_segments=2,
     # --- core column -------------------------------------------------------
     if naming == "xnalara":
         root = rig.b("root ground", (0, 0, 0), role="all_parents_bone")
-        hips = rig.b("root hips", (0, 0, P["hips_z"]), root, role="center_bone")
+        hips = rig.b("root hips", (0, 0, P["hips_z"]), root, role="lower_body_bone")
         spine_names = ["spine lower", "spine middle", "spine upper", "spine 4", "spine 5", "spine 6"]
         neck_name, head_name = "head neck lower", "head neck upper"
     elif naming == "bip001":
         root = rig.b("Bip001", (0, 0, 0), role="all_parents_bone")
-        hips = rig.b("Bip001 Pelvis", (0, 0, P["hips_z"]), root, role="center_bone")
+        hips = rig.b("Bip001 Pelvis", (0, 0, P["hips_z"]), root, role="lower_body_bone")
         spine_names = ["Bip001 Spine", "Bip001 Spine1", "Bip001 Spine2", "Bip001 Spine3", "Bip001 Spine4", "Bip001 Spine5"]
         neck_name, head_name = "Bip001 Neck", "Bip001 Head"
     elif naming == "ue4":
         root = rig.b("root", (0, 0, 0), role="all_parents_bone")
-        hips = rig.b("pelvis", (0, 0, P["hips_z"]), root, role="center_bone")
+        hips = rig.b("pelvis", (0, 0, P["hips_z"]), root, role="lower_body_bone")
         spine_names = ["spine_01", "spine_02", "spine_03", "spine_04", "spine_05", "spine_06"]
         neck_name, head_name = "neck_01", "head"
     elif naming == "daz":
-        hips = rig.b("hip", (0, 0, P["hips_z"]), role="center_bone")
+        hips = rig.b("hip", (0, 0, P["hips_z"]), role="lower_body_bone")
         root = hips
         spine_names = ["abdomenLower", "abdomenUpper", "chestLower", "chestUpper", "spine5", "spine6"]
         neck_name, head_name = "neckLower", "head"
     elif naming == "garbage":
         root = rig.b("bone_000", (0, 0, 0), role="all_parents_bone")
-        hips = rig.b("bone_001", (0, 0, P["hips_z"]), root, role="center_bone")
+        hips = rig.b("bone_001", (0, 0, P["hips_z"]), root, role="lower_body_bone")
         spine_names = [f"bone_01{i}" for i in range(6)]
         neck_name, head_name = "bone_020", "bone_021"
         import itertools
@@ -308,6 +353,7 @@ def build_rig(naming="xnalara", height=1.7, pose="A", spine_segments=2,
 
     neck = rig.b(neck_name, (0, 0, P["neck_z"]), rig.chest_bone, role="neck_bone")
     head = rig.b(head_name, (0, 0, P["head_z"]), neck, role="head_bone")
+    rig.arm_parent = neck if arms_from_neck else None
 
     # --- limbs --------------------------------------------------------------
     leg_parent = hips
@@ -316,7 +362,8 @@ def build_rig(naming="xnalara", height=1.7, pose="A", spine_segments=2,
     for side in ("left", "right"):
         nm = name_fn(side)
         _add_arm(rig, side, nm, has_shoulder, arm_twist, finger_count, carpals)
-        _add_leg(rig, side, nm, has_toe, leg_twist, parent=leg_parent)
+        _add_leg(rig, side, nm, has_toe, leg_twist, parent=leg_parent,
+                 corrective=leg_corrective, metatarsals=leg_metatarsals)
 
     # eyes (+ decoy symmetric pairs on the head)
     eye_names = {"xnalara": {"left": "head eyeball left", "right": "head eyeball right"},
@@ -392,4 +439,27 @@ CASES = [
     ("no_shoulder", dict(naming="ue4", has_shoulder=False, spine_segments=3)),
     ("four_finger", dict(naming="xnalara", finger_count=4)),
     ("spine6_wings", dict(naming="ue4", spine_segments=6, wings=True)),
+    # real-rig regression (inase): short clavicle + short steep arm — joint
+    # scoring once picked (clavicle, elbow) as (upper, elbow) here; 4-node
+    # chains must map positionally.
+    ("short_clavicle", dict(naming="xnalara", proportions={
+        "shoulder_root_x": 0.042, "upper_arm_len": 0.123, "forearm_len": 0.127})),
+    # real-rig regression (tifa): Daz-port leg with a leading corrective bone
+    # and a metatarsal chain — thigh must be the bend bone, not c_thigh_b.*
+    ("daz_leg_corrective", dict(naming="daz", arm_twist="inchain", pose="T",
+                                spine_segments=4, leg_corrective=True,
+                                leg_metatarsals=True)),
+    ("daz_leg_inchain_twist", dict(naming="daz", spine_segments=4,
+                                   leg_twist="inchain", leg_metatarsals=True)),
+    # real-rig regression (tifa): both thighs hang off a CENTERED pelvis bone
+    # under the hips — the fork must be promoted through it on both sides.
+    ("daz_pelvis_passthrough", dict(naming="daz", legs_from_pelvis=True,
+                                    leg_corrective=True, leg_metatarsals=True,
+                                    spine_segments=4)),
+    # real-rig regression (rouffe): shoulders hang off the NECK root with
+    # near-centered clavicle roots — fork scan must reach the second-to-last
+    # chain bone and remap chest/neck semantics.
+    ("xnalara_neck_shoulders", dict(naming="xnalara", arms_from_neck=True,
+                                    spine_segments=3,
+                                    proportions={"shoulder_root_x": 0.004})),
 ]

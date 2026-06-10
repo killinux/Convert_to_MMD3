@@ -66,6 +66,7 @@ class OBJECT_OT_add_ik(bpy.types.Operator):
         # per-side: a model missing one (or both) legs degrades instead of dying
         sides = [s for s in ('左', '右') if f'{s}ひざ' in eb and f'{s}足首' in eb]
         if not sides:
+            bpy.ops.object.mode_set(mode='OBJECT')
             self.report({'WARNING'}, "无完整腿链，跳过 IK")
             return {'FINISHED'}
 

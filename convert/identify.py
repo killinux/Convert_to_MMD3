@@ -40,10 +40,13 @@ class OBJECT_OT_auto_identify_skeleton(bpy.types.Operator):
         mapping = identify_skeleton(obj.data)
         cls = classify_helpers(obj.data, mapping)
 
+        # Write EVERY slot, including empty ones — leftover values from a
+        # previously converted model would otherwise leak into this one
+        # (rename would then grab bones that don't exist / belong elsewhere).
         scene = context.scene
         for prop_name, bone_name in mapping.items():
-            if bone_name and hasattr(scene, prop_name):
-                setattr(scene, prop_name, bone_name)
+            if hasattr(scene, prop_name):
+                setattr(scene, prop_name, bone_name or "")
 
         try:
             auto_detect_upper_body_chain(scene, obj)
@@ -53,7 +56,7 @@ class OBJECT_OT_auto_identify_skeleton(bpy.types.Operator):
         print("\n========== [Auto Identify] 骨架自动识别结果 ==========")
         matched, unmatched = [], []
         for prop_name, mmd_name in mmd_bone_map.items():
-            xps_name = mapping.get(prop_name, "") or getattr(scene, prop_name, "")
+            xps_name = mapping.get(prop_name, "")  # never echo stale scene props
             (matched if xps_name else unmatched).append(
                 f"  {mmd_name:10s} ← {xps_name or '(未匹配)'}")
         print(f"--- 已匹配 ({len(matched)}) ---")

@@ -31,7 +31,7 @@ from synth import CASES, build_rig  # noqa: E402
 
 # roles every humanoid case must get right (when present in expected)
 CORE_ROLES = [
-    "center_bone", "upper_body_bone", "upper_body2_bone", "neck_bone", "head_bone",
+    "lower_body_bone", "upper_body_bone", "upper_body2_bone", "neck_bone", "head_bone",
     "left_shoulder_bone", "right_shoulder_bone",
     "left_upper_arm_bone", "right_upper_arm_bone",
     "left_lower_arm_bone", "right_lower_arm_bone",

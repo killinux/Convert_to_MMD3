@@ -258,6 +258,11 @@ class OBJECT_OT_transfer_unused_weights(bpy.types.Operator):
                     continue
                 forced = deltoid_dest.get(ubone.name)
                 pool = segment_plan.get(ubone.name)
+                if ubone.name in self.CONTROL_BONES:
+                    # control bones must end up weightless; their skin (if any
+                    # — e.g. a pelvis bone renamed センター by a manual preset)
+                    # belongs to 下半身, not to whatever bone is nearest.
+                    pool = '下半身'
                 n = 0
                 for v in mesh.data.vertices:
                     for g in v.groups:

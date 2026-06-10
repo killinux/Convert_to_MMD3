@@ -72,6 +72,11 @@ class OBJECT_OT_create_bone_group(bpy.types.Operator):
                 coll.assign(bone_dict[b])
 
     def _create_bone_groups(self, obj):
+        # pose.group_add polls for POSE mode — the previous pipeline step may
+        # have left EDIT/OBJECT mode (e.g. IK degrading on a legless model)
+        bpy.context.view_layer.objects.active = obj
+        if bpy.context.mode != 'POSE':
+            bpy.ops.object.mode_set(mode='POSE')
         bone_dict = {b.name: b for b in obj.data.bones}
         to_create = [g for g in BONE_GROUP_PRESETS if g not in obj.pose.bone_groups]
         with bpy.context.temp_override(selected_objects=[obj], active_object=obj):
