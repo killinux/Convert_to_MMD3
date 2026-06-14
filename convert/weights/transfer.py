@@ -258,11 +258,12 @@ class OBJECT_OT_transfer_unused_weights(bpy.types.Operator):
                     continue
                 forced = deltoid_dest.get(ubone.name)
                 pool = segment_plan.get(ubone.name)
-                if ubone.name in self.CONTROL_BONES:
-                    # control bones must end up weightless; their skin (if any
-                    # — e.g. a pelvis bone renamed センター by a manual preset)
-                    # belongs to 下半身, not to whatever bone is nearest.
-                    pool = '下半身'
+                # Control bones end up weightless; their skin (if any) is re-homed
+                # below to the NEAREST valid deform bone (position-driven), not
+                # force-dumped on 下半身: a global root like 全ての親 (XPS root
+                # ground) carries far-flung skin (e.g. hair) that must follow its
+                # nearest body bone (頭); a pelvis bone's skin nearest-resolves to
+                # 下半身 on its own.
                 n = 0
                 for v in mesh.data.vertices:
                     for g in v.groups:

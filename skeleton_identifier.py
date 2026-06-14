@@ -285,13 +285,23 @@ def _map_spine(chain, leg_idx, arm_idx, result, H):
     if leg_idx is not None and leg_idx > 0:
         result["all_parents_bone"] = chain[0].name
 
-    # The leg fork bone is the pelvis — MMD's 下半身, the DEFORM bone that
-    # owns the hip weights. It must NOT be mapped to センター: センター is a
-    # weightless control bone that `complete` builds from scratch; renaming a
-    # weighted pelvis bone to センター gets its skin wiped by the control-bone
-    # cleanup (real-rig failure: a port whose legs hang off 'spine lower').
+    # Pelvis → センター vs 下半身. When the leg fork has a center-ish single-child
+    # parent (e.g. 'root hips' above 'bip001 pelvis'), use that parent as センター
+    # and leave the pelvis bone as a helper: its weight gets position-driven-
+    # transferred onto 下半身, preserving the thigh-root→hip gradient (the 2–4
+    # bone blend that gives the upper thigh its shape — collapsing it to 1–2
+    # bones flattens the thigh/butt, the inase regression).
+    # Only when the legs hang directly off the pelvis (no qualifying parent) do
+    # we map the pelvis to 下半身 itself, so a weighted pelvis is never renamed to
+    # センター and wiped by the control-bone cleanup (real-rig failure: a port
+    # whose legs hang off 'spine lower').
     if leg_idx is not None:
-        result["lower_body_bone"] = chain[leg_idx].name
+        if (leg_idx > 1
+                and len(chain[leg_idx - 1].children) == 1
+                and abs(chain[leg_idx - 1].head_local.x) < lat_eps):
+            result["center_bone"] = chain[leg_idx - 1].name
+        else:
+            result["lower_body_bone"] = chain[leg_idx].name
 
     if arm_idx is None:
         # Only leg fork found — map remaining chain above legs

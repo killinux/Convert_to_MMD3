@@ -40,6 +40,14 @@
 - **缺骨降级**：缺 肩/首/趾 自动合成、单侧缺臂/腿按侧跳过，管线不再 KeyError 中止。
 - **离线回归门**：`test/offline/` 用合成骨架族（14 命名/结构变体 × 权重场景）驱动真实插件代码，无需 Blender。
 
+## 标定回归修复（2026-06-14）
+
+泛化重构后在标定模型 inase 上暴露两处回归，根因都是对「游戏 rig 的根骨兜底权重」用了**按骨角色标签一刀切**——均改为**按顶点位置就近归属**（原理、验证与踩坑详见 [`docs/inase-fix-lowerbody-hair.md`](docs/inase-fix-lowerbody-hair.md)）：
+
+- **下半身大腿塑形丢失**：leg-fork 骨（`bip001 pelvis`）被直接当下半身主骨 → 大腿根过渡从 2–4 骨退化成 1–2 骨、扁塌。修复（`skeleton_identifier._map_spine`）：有合格居中单子父骨（`root hips`）时父当 センター、pelvis 留作 helper 经位置驱动转移恢复过渡；无父骨保持 pelvis→下半身（防抹皮）。
+- **头发误绑下半身**：`transfer` 把控制骨皮无脑塞给下半身，全局根 `全ての親`(`root ground`) 兜底的头发皮被连累、随盆腔乱翘。修复（`transfer.py`）：控制骨皮改按 nearest 变形骨归属（头发→頭、盆腔→下半身）。
+- 验证：inase 大腿 2–3 骨 + 下半身过渡恢复、头发绑下半身权重 0、前臂 0°、离线 19/19 + weight + complete 全过。
+
 ## 目录结构
 
 ```
