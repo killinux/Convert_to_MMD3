@@ -1,4 +1,4 @@
-# Convert to MMD 2
+# Convert to MMD 3
 
 将外部骨骼格式（XPS / XNALara 等）**一键转换为 MMD（MikuMikuDance）格式**的 Blender 插件 —— 在原版 [Convert to MMD](https://gitee.com/UITCIS/Convert-to-MMD)（作者 **UITCIS / 空想幻灵**）基础上，对**骨骼管理引擎**做了一次从零重构。
 
