@@ -140,6 +140,127 @@ def _detect_arm_deltoid(obj, centroids, name_map):
     return dest
 
 
+def _rehome_leg_helper_bleed(obj, mesh_objects, smap, cls):
+    """Fix cross-joint weight bleed on PRESERVED leg helpers (req: reuse, but on
+    the bone that actually drives the flesh).
+
+    A leftover XPS helper that rides the thigh (e.g. `unused muscle strand070`,
+    parent 左足) but paints lower-leg vertices drags those calf vertices with the
+    THIGH on a knee bend — they lag while the rest of the calf swings, denting
+    the calf belly. The classifier keeps such helpers ('preserve', via the thigh
+    rule that protects legit mid-thigh shapers like inase's xtra04), so the
+    normal nearest/​fold routes never touch them.
+
+    This pass moves ONLY the bled vertices — those lying in a different leg
+    segment than the helper's own leg anchor — onto the leg deform bone whose
+    tube they actually sit in, per vertex, weight-conserving. A helper whose
+    vertices all stay in its own segment (a real thigh shaper) is left untouched.
+    Targets the base bone (左足/左ひざ/左足首); step 6 renames those groups to the
+    D bones, so the rehomed weight merges seamlessly with the surrounding skin.
+
+    Scope guards (each must hold): name starts 'unused' (XPS dead helpers only —
+    structurally spares native-named shapers like xtra04, matching the existing
+    nearest-route policy), classifier == 'preserve', use_deform, and a leg-bone
+    ancestor. Geometry decides the rest: only verts inside the leg tube and
+    across a joint move. Heads-only segments (tail is XNALaraMesh-synthesised).
+    """
+    if not smap or not cls:
+        return 0
+    mw = obj.matrix_world
+    bones = obj.data.bones
+    # Resolve per-side leg chain (thigh→shin→ankle). Post-rename the bones carry
+    # MMD names; smap role values may still be the pre-rename names — try the
+    # role first, fall back to the MMD name.
+    role_names = {
+        '左': [('left_thigh_bone', '左足'), ('left_calf_bone', '左ひざ'),
+               ('left_ankle_bone', '左足首')],
+        '右': [('right_thigh_bone', '右足'), ('right_calf_bone', '右ひざ'),
+               ('right_ankle_bone', '右足首')],
+    }
+    leg_set = set()
+    side_segs = {}  # side -> [(deform_bone_name, p0, p1, seg_len)]
+    for side, roles in role_names.items():
+        seq = []
+        for role, mmd_name in roles:
+            cand = smap.get(role)
+            b = (bones.get(cand) if cand else None) or bones.get(mmd_name)
+            if b:
+                seq.append(b)
+                leg_set.add(b.name)
+        if len(seq) < 2:
+            continue
+        heads = [mw @ b.head_local for b in seq]
+        segs = []
+        for i in range(len(seq) - 1):
+            p0, p1 = heads[i], heads[i + 1]
+            L = (p1 - p0).length
+            if L > 1e-6:
+                segs.append((seq[i].name, p0, p1, L))  # bone drives flesh below its head
+        if segs:
+            side_segs[side] = segs
+    if not side_segs:
+        return 0
+
+    def _leg_anchor(bone):
+        cur = bone.parent
+        while cur:
+            if cur.name in leg_set:
+                return cur.name
+            cur = cur.parent
+        return None
+
+    def _vert_leg_bone(side, pos):
+        """The leg deform bone whose tube `pos` sits in (nearest segment), or None."""
+        best = None
+        for name, p0, p1, L in side_segs[side]:
+            seg = p1 - p0
+            L2 = seg.length_squared
+            if L2 < 1e-9:
+                continue
+            t = (pos - p0).dot(seg) / L2
+            if not (-0.15 <= t <= 1.15):
+                continue
+            proj = p0 + max(0.0, min(1.0, t)) * seg
+            perp = (pos - proj).length
+            if perp < L * 0.30 and (best is None or perp < best[1]):
+                best = (name, perp)
+        return best[0] if best else None
+
+    helpers = []
+    for b in bones:
+        if (b.name.startswith('unused') and b.use_deform
+                and cls.get(b.name) == 'preserve' and b.name not in leg_set):
+            anc = _leg_anchor(b)
+            if anc:
+                helpers.append((b.name, anc))
+    if not helpers:
+        return 0
+
+    moved = 0
+    for mesh in mesh_objects:
+        for hname, anc in helpers:
+            vg = mesh.vertex_groups.get(hname)
+            if not vg:
+                continue
+            side = '左' if anc.startswith('左') else ('右' if anc.startswith('右') else None)
+            if side not in side_segs:
+                continue
+            plans = []  # (vidx, weight, dest)
+            for v in mesh.data.vertices:
+                for g in v.groups:
+                    if g.group == vg.index and g.weight > 0.001:
+                        dest = _vert_leg_bone(side, mw @ v.co)
+                        if dest and dest != anc:
+                            plans.append((v.index, g.weight, dest))
+                        break
+            for vidx, wt, dest in plans:
+                tvg = mesh.vertex_groups.get(dest) or mesh.vertex_groups.new(name=dest)
+                tvg.add([vidx], wt, 'ADD')
+                vg.remove([vidx])
+            moved += len(plans)
+    return moved
+
+
 class OBJECT_OT_transfer_unused_weights(bpy.types.Operator):
     """Move unused/control-bone weights onto the right valid deform bone."""
     bl_idname = "object.transfer_unused_weights"
@@ -314,6 +435,12 @@ class OBJECT_OT_transfer_unused_weights(bpy.types.Operator):
                                 total_transferred += 1
                                 break
                     mesh.vertex_groups.remove(vg)
+
+        # Preserved leg helpers (kept for legit thigh shaping) can still bleed a
+        # few vertices across the knee onto the wrong side — rehome just those.
+        bled = _rehome_leg_helper_bleed(obj, mesh_objects, smap, cls)
+        if bled:
+            print(f"[Transfer unused] 腿 helper 跨膝渗漏回收: {bled} 顶点 → 正确腿骨")
 
         self.report({'INFO'}, f"转移 {total_transferred} 顶点权重")
         return {'FINISHED'}
